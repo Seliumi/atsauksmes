@@ -1,0 +1,35 @@
+.star-rating-input {
+    display: inline-flex;
+    flex-direction: row-reverse;
+    justify-content: flex-end;
+}
+
+.star-rating-input input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.star-rating-input label {
+    font-size: 28px;
+    line-height: 1;
+    color: #ccc;
+    cursor: pointer;
+    padding: 0 2px;
+    transition: color 0.15s ease-in-out;
+}
+
+.star-rating-input label:hover,
+.star-rating-input label:hover ~ label {
+    color: #ffb400;
+}
+
+.star-rating-input input:checked ~ label {
+    color: #ffb400;
+}
+
+.star-rating-input input:focus-visible ~ label {
+    outline: 2px solid #2271b1;
+    outline-offset: 2px;
+}
