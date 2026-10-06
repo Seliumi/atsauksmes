@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Atsauksmes
  * Description: Atsauksmju sistēma WordPress videi.
- * Version: 2.2
+ * Version: 2.3
  * Author: Anna A
  */
 if ( ! defined( 'ABSPATH' ) ) {
@@ -24,17 +24,17 @@ add_action( 'init', function() {
     );
 
     $args = array(
-        'labels'             => $labels,
-        'public'             => true,
-        'publicly_queryable' => false,
-        'exclude_from_search'=> true,
-        'rewrite'            => false,
-        'has_archive'        => false,
-        'show_in_menu'       => true,
-        'menu_icon'          => 'dashicons-star-filled',
-        'supports'           => array( 'title', 'editor', 'author' ),
-        'capability_type'    => 'post',
-        'capabilities'       => array(
+        'labels'              => $labels,
+        'public'              => true,
+        'publicly_queryable'  => false,
+        'exclude_from_search' => true,
+        'rewrite'             => false,
+        'has_archive'         => false,
+        'show_in_menu'        => true,
+        'menu_icon'           => 'dashicons-star-filled',
+        'supports'            => array( 'title', 'editor', 'author' ),
+        'capability_type'     => 'post',
+        'capabilities'        => array(
             'create_posts' => 'do_not_allow',
         ),
         'map_meta_cap'        => true,
@@ -239,8 +239,16 @@ function handle_submit_product_review() {
         wp_send_json_error( array( 'message' => 'Jums ir jābūt ielogotam, lai atstātu atsauksmi.' ) );
     }
 
-    $user_id    = get_current_user_id();
-    $product_id = intval( $_POST['review_product_id'] ?? 0 );
+    $user_id      = get_current_user_id();
+    $product_id   = intval( $_POST['review_product_id'] ?? 0 );
+    $current_user = wp_get_current_user();
+
+    // Only customers who have actually bought this product (order status
+    // completed/processing, per WooCommerce's own definition) may review it.
+    if ( ! wc_customer_bought_product( $current_user->user_email, $user_id, $product_id ) ) {
+        wp_send_json_error( array( 'message' => 'Atsauksmes var atstāt tikai lietotāji, kuri ir iegādājušies šo produktu.' ) );
+    }
+
     $title      = sanitize_text_field( $_POST['review_title'] ?? '' );
     $content    = sanitize_textarea_field( $_POST['review_content'] ?? '' );
     $rating     = intval( $_POST['review_rating'] ?? 0 );
@@ -302,8 +310,6 @@ function handle_submit_product_review() {
                 'status'  => 'pending',
             ) );
         } else {
-            $current_user = wp_get_current_user();
-
             wp_send_json_success( array(
                 'message' => 'Paldies! Jūsu atsauksme ir publicēta.',
                 'status'  => 'publish',
@@ -391,21 +397,45 @@ function custom_display_product_reviews() {
     }
 
     $product_id = $product->get_id();
+    $max_shown  = 5;
+
+    // If the current user has their own published review for this product,
+    // fetch it separately so it can always be pinned to the top of the list,
+    // regardless of how recent it is relative to everyone else's.
+    $own_review = null;
+    if ( is_user_logged_in() ) {
+        $own_review_results = get_posts( array(
+            'post_type'      => 'product_review',
+            'post_status'    => 'publish',
+            'posts_per_page' => 1,
+            'author'         => get_current_user_id(),
+            'meta_key'       => '_review_product_id',
+            'meta_value'     => $product_id,
+        ) );
+        if ( $own_review_results ) {
+            $own_review = $own_review_results[0];
+        }
+    }
+
+    $other_reviews_args = array(
+        'post_type'      => 'product_review',
+        'post_status'    => 'publish',
+        'posts_per_page' => $own_review ? ( $max_shown - 1 ) : $max_shown,
+        'meta_key'       => '_review_product_id',
+        'meta_value'     => $product_id,
+        'orderby'        => 'date',
+        'order'          => 'DESC',
+    );
+
+    if ( $own_review ) {
+        $other_reviews_args['post__not_in'] = array( $own_review->ID );
+    }
+
+    $other_reviews = get_posts( $other_reviews_args );
+    $reviews       = $own_review ? array_merge( array( $own_review ), $other_reviews ) : $other_reviews;
     ?>
     <div class="custom-reviews">
         <h2>Atsauksmes</h2>
-
-        <?php
-        $reviews = get_posts( array(
-            'post_type'      => 'product_review',
-            'post_status'    => 'publish',
-            'posts_per_page' => 5,
-            'meta_key'       => '_review_product_id',
-            'meta_value'     => $product_id,
-            'orderby'        => 'date',
-            'order'          => 'DESC',
-        ) );
-        ?>
 
         <div class="reviews-list" id="atsauksmes-list">
         <?php if ( $reviews ) : ?>
@@ -437,34 +467,38 @@ function custom_display_product_reviews() {
         </div>
 
         <?php if ( is_user_logged_in() ) : ?>
-            <h3>Pievienot atsauksmi</h3>
-            <form method="post" action="" class="custom-review-form">
-                <input type="hidden" name="review_product_id" value="<?php echo esc_attr( $product_id ); ?>" />
-                <div class="review-form-response"></div>
-                <p>
-                    <label for="review_title">Virsraksts:</label><br>
-                    <input type="text" name="review_title" id="review_title" maxlength="100" style="width:100%;" />
-                </p>
-                <p>
-                    <label for="review_content">Atsauksme:</label><br>
-                    <textarea name="review_content" id="review_content" rows="4" style="width:100%;"></textarea>
-                </p>
-                <p>
-                    <label>Vērtējums:</label><br>
-                    <?php
-                    //Vērtēšana hover izvēles veidā - css fails priekš šī
-                    ?>
-                    <div class="star-rating-input">
-                        <?php for ( $i = 5; $i >= 1; $i-- ) : ?>
-                            <input type="radio" id="star<?php echo $i; ?>-<?php echo esc_attr( $product_id ); ?>" name="review_rating" value="<?php echo $i; ?>">
-                            <label for="star<?php echo $i; ?>-<?php echo esc_attr( $product_id ); ?>" title="<?php echo $i; ?> zvaigzne(s)">★</label>
-                        <?php endfor; ?>
-                    </div>
-                </p>
-                <p>
-                    <input type="submit" value="Iesniegt atsauksmi" class="button" />
-                </p>
-            </form>
+            <?php if ( ! $own_review && wc_customer_bought_product( wp_get_current_user()->user_email, get_current_user_id(), $product_id ) ) : ?>
+                <h3>Pievienot atsauksmi</h3>
+                <form method="post" action="" class="custom-review-form">
+                    <input type="hidden" name="review_product_id" value="<?php echo esc_attr( $product_id ); ?>" />
+                    <div class="review-form-response"></div>
+                    <p>
+                        <label for="review_title">Virsraksts:</label><br>
+                        <input type="text" name="review_title" id="review_title" maxlength="100" style="width:100%;" />
+                    </p>
+                    <p>
+                        <label for="review_content">Atsauksme:</label><br>
+                        <textarea name="review_content" id="review_content" rows="4" style="width:100%;"></textarea>
+                    </p>
+                    <p>
+                        <label>Vērtējums:</label><br>
+                        <?php
+                        //Vērtēšana hover izvēles veidā - css fails priekš šī
+                        ?>
+                        <div class="star-rating-input">
+                            <?php for ( $i = 5; $i >= 1; $i-- ) : ?>
+                                <input type="radio" id="star<?php echo $i; ?>-<?php echo esc_attr( $product_id ); ?>" name="review_rating" value="<?php echo $i; ?>">
+                                <label for="star<?php echo $i; ?>-<?php echo esc_attr( $product_id ); ?>" title="<?php echo $i; ?> zvaigzne(s)">★</label>
+                            <?php endfor; ?>
+                        </div>
+                    </p>
+                    <p>
+                        <input type="submit" value="Iesniegt atsauksmi" class="button" />
+                    </p>
+                </form>
+            <?php elseif ( ! $own_review ) : ?>
+                <p>Atsauksmes var atstāt tikai lietotāji, kuri ir iegādājušies šo produktu.</p>
+            <?php endif; ?>
         <?php else : ?>
             <p>Lai pievienotu atsauksmi, lūdzu, <a href="<?php echo wp_login_url( get_permalink() ); ?>">ielogojieties</a>.</p>
         <?php endif; ?>
