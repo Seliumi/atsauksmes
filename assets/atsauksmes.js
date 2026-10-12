@@ -1,34 +1,88 @@
 (function($) {
-
-    function escapeHtml(str) {
-        return $('<div>').text(str == null ? '' : str).html();
+    //Pašreizējā kārtošana / zvaigžņu filtrs / lappuse
+    var state = { sort: 'date_desc', rating: 0, page: 1 };
+ 
+    function resetState() {
+        state = { sort: 'date_desc', rating: 0, page: 1 };
+        $('#atsauksmes-sort').val('date_desc');
+        $('#atsauksmes-filter-rating').val('0');
     }
-
-    function buildReviewCardHtml(review) {
-        return '<div class="review-card" data-review-id="' + review.id + '" style="border:1px solid #ddd; padding:15px; margin-bottom:15px;">' +
-            '<div class="review-rating">' + review.stars + '</div>' +
-            '<h4>' + escapeHtml(review.title) + '</h4>' +
-            '<p>' + escapeHtml(review.content) + '</p>' +
-            '<small>' + escapeHtml(review.date) + ' — ' + escapeHtml(review.author) + '</small>' +
-            '<p><a href="#" class="delete-review-link" data-review-id="' + review.id + '">Dzēst atsauksmi</a></p>' +
-            '</div>';
-    }
-
-    //Priekš "Atsauksmes (n)" WooCommerce tab nav, lai uzskaita jaunu atsauksmi uzreiz
-    function bumpReviewsTabCount() {
+ 
+    //Atjauno skaitu "Atsauksmes (n)" WooCommerce tab nav
+    function setReviewsTabCount(count) {
         var tabLink = $('li.reviews_tab > a').first();
-        if (!tabLink.length) {
-            return;
-        }
-        var text = tabLink.text();
-        var match = text.match(/\((\d+)\)/);
-        if (match) {
-            var newCount = parseInt(match[1], 10) + 1;
-            tabLink.text(text.replace(/\(\d+\)/, '(' + newCount + ')'));
+        if (tabLink.length) {
+            tabLink.text(tabLink.text().replace(/\(\d+\)/, '(' + count + ')'));
         }
     }
+ 
+    //Ielādē atsauksmju sarakstu no servera ar pašreizējiem iestatījumiem
+    function loadReviews(scrollToTop) {
+        var list = $('#atsauksmes-list');
+ 
+        list.css('opacity', 0.5);
+ 
+        $.ajax({
+            url: custom_reviews_obj.ajax_url,
+            type: 'POST',
+            data: {
+                action: 'atsauksmes_load_reviews',
+                product_id: $('.custom-reviews').data('product-id'),
+                sort: state.sort,
+                rating: state.rating,
+                page: state.page
+            },
+            success: function(response) {
+                if (!response.success) {
+                    return;
+                }
+ 
+                //Var labot lappuses nr
+                state.page = response.data.page;
+ 
+                list.html(response.data.list_html);
+                $('#atsauksmes-pagination').html(response.data.pagination_html);
+                $('.atsauksmes-controls').toggle(response.data.total_count > 0);
+                setReviewsTabCount(response.data.total_count);
+ 
+                if (scrollToTop) {
+                    $('.custom-reviews')[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            },
+            error: function() {
+                list.prepend('<p style="color: red;">Neizdevās ielādēt atsauksmes. Lūdzu, mēģiniet vēlreiz.</p>');
+            },
+            complete: function() {
+                list.css('opacity', 1);
+            }
+        });
+    }
+
 
     $(document).ready(function() {
+
+        resetState();
+ 
+        //Kārtošanas maiņa
+        $(document).on('change', '#atsauksmes-sort', function() {
+            state.sort = $(this).val();
+            state.page = 1;
+            loadReviews();
+        });
+ 
+        //Zvaigžņu filtra maiņa
+        $(document).on('change', '#atsauksmes-filter-rating', function() {
+            state.rating = parseInt($(this).val(), 10) || 0;
+            state.page = 1;
+            loadReviews();
+        });
+ 
+        //Lappušu navigācija
+        $(document).on('click', '.atsauksmes-page-link', function(e) {
+            e.preventDefault();
+            state.page = parseInt($(this).data('page'), 10) || 1;
+            loadReviews(true);
+        });
 
         //Kad forma tiek iesniegta
         $(document).on('submit', '.custom-review-form', function(e) {
@@ -67,13 +121,12 @@
                         responseDiv.html('<p style="color: green;">' + response.data.message + '</p>');
                         form[0].reset();
 
-                        //Ja uzreiz publicē, uzreiz sarakstā ieliek
-                        if (response.data.review) {
-                            var list = $('#atsauksmes-list');
-                            list.find('.no-reviews-msg').remove();
-                            list.prepend(buildReviewCardHtml(response.data.review));
-                            bumpReviewsTabCount();
+                        //Ja uzreiz publicē, uzreiz pārlādē sarakstu
+                        if (response.data.status === 'publish') {
+                            resetState();
+                            loadReviews();
                         }
+
                     } else {
                         //Kļūda
                         responseDiv.html('<p style="color: red;">' + response.data.message + '</p>');
@@ -95,7 +148,6 @@
 
             var link = $(this);
             var reviewId = link.data('review-id');
-            var card = link.closest('.review-card');
 
             if (!window.confirm('Vai tiešām vēlaties dzēst šo atsauksmi?')) {
                 return;
@@ -113,9 +165,7 @@
                 },
                 success: function(response) {
                     if (response.success) {
-                        card.fadeOut(200, function() {
-                            $(this).remove();
-                        });
+                        loadReviews();
                     } else {
                         alert(response.data.message);
                         link.text('Dzēst atsauksmi');

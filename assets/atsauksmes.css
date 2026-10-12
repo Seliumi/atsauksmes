@@ -33,3 +33,56 @@
     outline: 2px solid #2271b1;
     outline-offset: 2px;
 }
+
+/* Filtrēšana/lappošana */
+.atsauksmes-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 16px;
+    margin-bottom: 20px;
+}
+ 
+.atsauksmes-controls label {
+    margin: 0;
+}
+ 
+.atsauksmes-controls select {
+    min-width: 160px;
+}
+ 
+.reviews-list {
+    transition: opacity 0.15s ease-in-out;
+}
+ 
+.atsauksmes-pagination {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 10px 0 25px;
+}
+ 
+.atsauksmes-pagination a,
+.atsauksmes-pagination .atsauksmes-page-current {
+    padding: 6px 12px;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    line-height: 1.2;
+    text-decoration: none;
+}
+ 
+.atsauksmes-pagination a:hover {
+    background: #f2f2f2;
+}
+ 
+.atsauksmes-pagination .atsauksmes-page-current {
+    background: #333;
+    border-color: #333;
+    color: #fff;
+}
+ 
+.atsauksmes-pagination .atsauksmes-page-gap {
+    padding: 0 4px;
+}
+ 

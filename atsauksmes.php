@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Atsauksmes
  * Description: Atsauksmju sistēma WordPress videi.
- * Version: 2.3
+ * Version: 2.4
  * Author: Anna A
  */
 if ( ! defined( 'ABSPATH' ) ) {
@@ -206,20 +206,30 @@ add_action( 'pre_get_posts', function( $query ) {
 
 // 4. JS un CSS
 add_action( 'wp_enqueue_scripts', function() {
+    //Tikai produkta lapā
+    if ( ! function_exists( 'is_product' ) || ! is_product() ) {
+        return;
+    }
+
+    $css_path = plugin_dir_path( __FILE__ ) . 'assets/atsauksmes.css';
+    $js_path  = plugin_dir_path( __FILE__ ) . 'assets/atsauksmes.js';
+
+    //Lai vienmēr ielādē jaunāko failu - testēšanai
     wp_enqueue_style(
         'atsauksmes-css',
         plugins_url( 'assets/atsauksmes.css', __FILE__ ),
         array(),
-        '1.0'
+        file_exists( $css_path ) ? filemtime( $css_path ) : '1.0'
     );
 
     wp_enqueue_script(
         'atsauksmes-js',
         plugins_url( 'assets/atsauksmes.js', __FILE__ ),
         array( 'jquery' ),
-        '1.1',
+        file_exists( $js_path ) ? filemtime( $js_path ) : '1.0',
         true
     );
+
     wp_localize_script( 'atsauksmes-js', 'custom_reviews_obj', array(
         'ajax_url'     => admin_url( 'admin-ajax.php' ),
         'nonce'        => wp_create_nonce( 'submit_review_nonce' ),
@@ -243,8 +253,7 @@ function handle_submit_product_review() {
     $product_id   = intval( $_POST['review_product_id'] ?? 0 );
     $current_user = wp_get_current_user();
 
-    // Only customers who have actually bought this product (order status
-    // completed/processing, per WooCommerce's own definition) may review it.
+    //Produkta iegādes pārbaude
     if ( ! wc_customer_bought_product( $current_user->user_email, $user_id, $product_id ) ) {
         wp_send_json_error( array( 'message' => 'Atsauksmes var atstāt tikai lietotāji, kuri ir iegādājušies šo produktu.' ) );
     }
@@ -313,14 +322,6 @@ function handle_submit_product_review() {
             wp_send_json_success( array(
                 'message' => 'Paldies! Jūsu atsauksme ir publicēta.',
                 'status'  => 'publish',
-                'review'  => array(
-                    'id'      => $review_id,
-                    'title'   => $review_data['post_title'],
-                    'content' => $content,
-                    'stars'   => str_repeat( '⭐', $rating ),
-                    'author'  => $current_user->display_name,
-                    'date'    => atsauksmes_format_date_lv( current_time( 'timestamp' ) ),
-                ),
             ) );
         }
     } else {
@@ -390,82 +391,280 @@ function atsauksmes_count_published_reviews( $product_id ) {
     return count( $ids );
 }
 
+//Filtrēšanas izvēles
+function atsauksmes_allowed_sorts() {
+    return array( 'date_desc', 'date_asc', 'rating_desc', 'rating_asc' );
+}
+
+//Pašreizējā lietotāja atsauksme produktam, ja tāda ir
+function atsauksmes_get_own_review( $product_id ) {
+    if ( ! is_user_logged_in() ) {
+        return null;
+    }
+ 
+    $results = get_posts( array(
+        'post_type'      => 'product_review',
+        'post_status'    => 'publish',
+        'posts_per_page' => 1,
+        'author'         => get_current_user_id(),
+        'meta_key'       => '_review_product_id',
+        'meta_value'     => $product_id,
+    ) );
+ 
+    return $results ? $results[0] : null;
+}
+
+
+
+function atsauksmes_build_review_query_args( $product_id, $sort, $rating_filter ) {
+    $meta_query = array(
+        'relation'       => 'AND',
+        'product_clause' => array(
+            'key'   => '_review_product_id',
+            'value' => $product_id,
+        ),
+    );
+ 
+    //Vērtējuma nosacījums vajadzīgs tikai, ja filtrē vai kārto pēc vērtējuma
+    $sort_by_rating = in_array( $sort, array( 'rating_desc', 'rating_asc' ), true );
+ 
+    if ( $rating_filter > 0 || $sort_by_rating ) {
+        $rating_clause = array(
+            'key'  => '_review_rating',
+            'type' => 'NUMERIC',
+        );
+ 
+        if ( $rating_filter > 0 ) {
+            $rating_clause['value']   = $rating_filter;
+            $rating_clause['compare'] = '=';
+        } else {
+            $rating_clause['compare'] = 'EXISTS';
+        }
+ 
+        $meta_query['rating_clause'] = $rating_clause;
+    }
+ 
+    switch ( $sort ) {
+        case 'date_asc':
+            $orderby = array( 'date' => 'ASC' );
+            break;
+        case 'rating_desc':
+            //Vienādu vērtējumu gadījumā jaunākās pirmās
+            $orderby = array( 'rating_clause' => 'DESC', 'date' => 'DESC' );
+            break;
+        case 'rating_asc':
+            $orderby = array( 'rating_clause' => 'ASC', 'date' => 'DESC' );
+            break;
+        case 'date_desc':
+        default:
+            $orderby = array( 'date' => 'DESC' );
+            break;
+    }
+ 
+    return array(
+        'post_type'   => 'product_review',
+        'post_status' => 'publish',
+        'meta_query'  => $meta_query,
+        'orderby'     => $orderby,
+    );
+}
+ 
+//Vienas atsauksmes kartiņa
+function atsauksmes_render_review_card( $review ) {
+    $rating = get_post_meta( $review->ID, '_review_rating', true );
+    $stars  = str_repeat( '⭐', intval( $rating ) );
+    ?>
+    <div class="review-card" data-review-id="<?php echo esc_attr( $review->ID ); ?>" style="border:1px solid #ddd; padding:15px; margin-bottom:15px;">
+        <div class="review-rating"><?php echo $stars; ?></div>
+        <h4><?php echo esc_html( $review->post_title ); ?></h4>
+        <p><?php echo esc_html( $review->post_content ); ?></p>
+        <small>
+            <?php echo esc_html( atsauksmes_format_date_lv( get_the_date( 'U', $review->ID ) ) ); ?>
+            —
+            <?php echo esc_html( get_the_author_meta( 'display_name', $review->post_author ) ); ?>
+        </small>
+        <?php if ( get_current_user_id() === (int) $review->post_author ) : ?>
+            <p>
+                <a href="#" class="delete-review-link" data-review-id="<?php echo esc_attr( $review->ID ); ?>">
+                    Dzēst atsauksmi
+                </a>
+            </p>
+        <?php endif; ?>
+    </div>
+    <?php
+}
+ 
+//Lappušu navigācija - pirmā, pēdējā un lappuses ap pašreizējo, pārējās aizstātas ar "…"
+function atsauksmes_render_pagination( $current_page, $total_pages ) {
+    if ( $total_pages <= 1 ) {
+        return '';
+    }
+ 
+    $pages = array();
+    for ( $i = 1; $i <= $total_pages; $i++ ) {
+        if ( 1 === $i || $total_pages === $i || abs( $i - $current_page ) <= 1 ) {
+            $pages[] = $i;
+        }
+    }
+ 
+    $html = '<nav class="atsauksmes-pagination" aria-label="Lappušu navigācija">';
+ 
+    if ( $current_page > 1 ) {
+        $html .= '<a href="#" class="atsauksmes-page-link" data-page="' . ( $current_page - 1 ) . '">&laquo; Iepriekšējā</a>';
+    }
+ 
+    $previous = 0;
+    foreach ( $pages as $page ) {
+        if ( $page - $previous > 1 ) {
+            $html .= '<span class="atsauksmes-page-gap">…</span>';
+        }
+ 
+        if ( $page === $current_page ) {
+            $html .= '<span class="atsauksmes-page-current" aria-current="page">' . $page . '</span>';
+        } else {
+            $html .= '<a href="#" class="atsauksmes-page-link" data-page="' . $page . '">' . $page . '</a>';
+        }
+ 
+        $previous = $page;
+    }
+ 
+    if ( $current_page < $total_pages ) {
+        $html .= '<a href="#" class="atsauksmes-page-link" data-page="' . ( $current_page + 1 ) . '">Nākamā &raquo;</a>';
+    }
+ 
+    $html .= '</nav>';
+ 
+    return $html;
+}
+ 
+//Atsauksmju saraksta HTML + lappušu navigācija (izmanto gan pirmajai ielādei, gan AJAX)
+function atsauksmes_get_reviews_view( $product_id, $sort, $rating_filter, $page, $pin_own = false ) {
+    $per_page = 2; //Max posts per page
+ 
+    //Paša atsauksme uzrādās pirmā
+    $pinned = null;
+    if ( $pin_own ) {
+        $own = atsauksmes_get_own_review( $product_id );
+        if ( $own && ( 0 === $rating_filter || (int) get_post_meta( $own->ID, '_review_rating', true ) === $rating_filter ) ) {
+            $pinned = $own;
+        }
+    }
+ 
+    $query_args                   = atsauksmes_build_review_query_args( $product_id, $sort, $rating_filter );
+    $query_args['posts_per_page'] = $per_page;
+    $query_args['paged']          = $page;
+    if ( $pinned ) {
+        $query_args['post__not_in'] = array( $pinned->ID );
+    }
+ 
+    $query = new WP_Query( $query_args );
+ 
+    //Ja pēdējā lapa neeksistē
+    if ( $page > 1 && $page > $query->max_num_pages ) {
+        $page                = max( 1, (int) $query->max_num_pages );
+        $query_args['paged'] = $page;
+        $query               = new WP_Query( $query_args );
+    }
+ 
+    $show_pinned = ( 1 === $page && $pinned );
+ 
+    ob_start();
+ 
+    if ( $show_pinned ) {
+        atsauksmes_render_review_card( $pinned );
+    }
+ 
+    foreach ( $query->posts as $review ) {
+        atsauksmes_render_review_card( $review );
+    }
+ 
+    if ( ! $query->posts && ! $show_pinned ) {
+        if ( 0 === atsauksmes_count_published_reviews( $product_id ) ) {
+            echo '<p class="no-reviews-msg">Pašlaik atsauksmju nav.</p>';
+        } else {
+            echo '<p class="no-reviews-msg">Nav atsauksmju, kas atbilst izvēlētajiem filtriem.</p>';
+        }
+    }
+ 
+    $list_html = ob_get_clean();
+ 
+    return array(
+        'list_html'       => $list_html,
+        'pagination_html' => atsauksmes_render_pagination( $page, (int) $query->max_num_pages ),
+        'page'            => $page,
+    );
+}
+ 
+//Saraksta pārlādēšana ar ajax
+add_action( 'wp_ajax_atsauksmes_load_reviews', 'atsauksmes_ajax_load_reviews' );
+add_action( 'wp_ajax_nopriv_atsauksmes_load_reviews', 'atsauksmes_ajax_load_reviews' );
+ 
+function atsauksmes_ajax_load_reviews() {
+    $product_id    = intval( $_POST['product_id'] ?? 0 );
+    $sort          = sanitize_key( $_POST['sort'] ?? 'date_desc' );
+    $rating_filter = intval( $_POST['rating'] ?? 0 );
+    $page          = max( 1, intval( $_POST['page'] ?? 1 ) );
+    $pin_own       = ! empty( $_POST['pin_own'] );
+ 
+    if ( ! $product_id ) {
+        wp_send_json_error( array( 'message' => 'Produkts nav norādīts.' ) );
+    }
+ 
+    if ( ! in_array( $sort, atsauksmes_allowed_sorts(), true ) ) {
+        $sort = 'date_desc';
+    }
+ 
+    if ( $rating_filter < 1 || $rating_filter > 5 ) {
+        $rating_filter = 0;
+    }
+ 
+    $view = atsauksmes_get_reviews_view( $product_id, $sort, $rating_filter, $page, $pin_own );
+ 
+    wp_send_json_success( array(
+        'list_html'       => $view['list_html'],
+        'pagination_html' => $view['pagination_html'],
+        'page'            => $view['page'],
+        'total_count'     => atsauksmes_count_published_reviews( $product_id ),
+    ) );
+}
+ 
 function custom_display_product_reviews() {
     global $product;
     if ( ! $product ) {
         return;
     }
-
-    $product_id = $product->get_id();
-    $max_shown  = 5;
-
-    // If the current user has their own published review for this product,
-    // fetch it separately so it can always be pinned to the top of the list,
-    // regardless of how recent it is relative to everyone else's.
-    $own_review = null;
-    if ( is_user_logged_in() ) {
-        $own_review_results = get_posts( array(
-            'post_type'      => 'product_review',
-            'post_status'    => 'publish',
-            'posts_per_page' => 1,
-            'author'         => get_current_user_id(),
-            'meta_key'       => '_review_product_id',
-            'meta_value'     => $product_id,
-        ) );
-        if ( $own_review_results ) {
-            $own_review = $own_review_results[0];
-        }
-    }
-
-    $other_reviews_args = array(
-        'post_type'      => 'product_review',
-        'post_status'    => 'publish',
-        'posts_per_page' => $own_review ? ( $max_shown - 1 ) : $max_shown,
-        'meta_key'       => '_review_product_id',
-        'meta_value'     => $product_id,
-        'orderby'        => 'date',
-        'order'          => 'DESC',
-    );
-
-    if ( $own_review ) {
-        $other_reviews_args['post__not_in'] = array( $own_review->ID );
-    }
-
-    $other_reviews = get_posts( $other_reviews_args );
-    $reviews       = $own_review ? array_merge( array( $own_review ), $other_reviews ) : $other_reviews;
+ 
+    $product_id  = $product->get_id();
+    $own_review  = atsauksmes_get_own_review( $product_id );
+    $total_count = atsauksmes_count_published_reviews( $product_id );
+    $view        = atsauksmes_get_reviews_view( $product_id, 'date_desc', 0, 1, true );
     ?>
-    <div class="custom-reviews">
+    <div class="custom-reviews" data-product-id="<?php echo esc_attr( $product_id ); ?>">
         <h2>Atsauksmes</h2>
-
-        <div class="reviews-list" id="atsauksmes-list">
-        <?php if ( $reviews ) : ?>
-            <?php foreach ( $reviews as $review ) :
-                $rating = get_post_meta( $review->ID, '_review_rating', true );
-                $stars  = str_repeat( '⭐', intval( $rating ) );
-                ?>
-                <div class="review-card" data-review-id="<?php echo esc_attr( $review->ID ); ?>" style="border:1px solid #ddd; padding:15px; margin-bottom:15px;">
-                    <div class="review-rating"><?php echo $stars; ?></div>
-                    <h4><?php echo esc_html( $review->post_title ); ?></h4>
-                    <p><?php echo esc_html( $review->post_content ); ?></p>
-                    <small>
-                        <?php echo esc_html( atsauksmes_format_date_lv( get_the_date( 'U', $review->ID ) ) ); ?>
-                        —
-                        <?php echo esc_html( get_the_author_meta( 'display_name', $review->post_author ) ); ?>
-                    </small>
-                    <?php if ( get_current_user_id() === (int) $review->post_author ) : ?>
-                        <p>
-                            <a href="#" class="delete-review-link" data-review-id="<?php echo esc_attr( $review->ID ); ?>">
-                                Dzēst atsauksmi
-                            </a>
-                        </p>
-                    <?php endif; ?>
-                </div>
-            <?php endforeach; ?>
-        <?php else : ?>
-            <p class="no-reviews-msg">Pašlaik atsauksmju nav.</p>
-        <?php endif; ?>
+ 
+        <div class="atsauksmes-controls"<?php echo $total_count ? '' : ' style="display:none;"'; ?>>
+            <label for="atsauksmes-sort">Kārtot pēc:</label>
+            <select id="atsauksmes-sort">
+                <option value="date_desc">Jaunākās</option>
+                <option value="date_asc">Senākās</option>
+                <option value="rating_desc">Augstākais vērtējums</option>
+                <option value="rating_asc">Zemākais vērtējums</option>
+            </select>
+ 
+            <label for="atsauksmes-filter-rating">Zvaigznes:</label>
+            <select id="atsauksmes-filter-rating">
+                <option value="0">Visas</option>
+                <?php for ( $i = 5; $i >= 1; $i-- ) : ?>
+                    <option value="<?php echo $i; ?>"><?php echo $i; ?> <?php echo ( 1 === $i ) ? 'zvaigzne' : 'zvaigznes'; ?></option>
+                <?php endfor; ?>
+            </select>
+ 
+            <?php //filtrs "ar vizuālo materiālu", kad būs attēlu funkcija ?>
         </div>
-
+ 
+        <div class="reviews-list" id="atsauksmes-list"><?php echo $view['list_html']; ?></div>
+        <div class="reviews-pagination" id="atsauksmes-pagination"><?php echo $view['pagination_html']; ?></div>
+ 
         <?php if ( is_user_logged_in() ) : ?>
             <?php if ( ! $own_review && wc_customer_bought_product( wp_get_current_user()->user_email, get_current_user_id(), $product_id ) ) : ?>
                 <h3>Pievienot atsauksmi</h3>
@@ -483,7 +682,7 @@ function custom_display_product_reviews() {
                     <p>
                         <label>Vērtējums:</label><br>
                         <?php
-                        //Vērtēšana hover izvēles veidā - css fails priekš šī
+                        //Vērtēšana hover izvēles veidā
                         ?>
                         <div class="star-rating-input">
                             <?php for ( $i = 5; $i >= 1; $i-- ) : ?>
@@ -505,6 +704,7 @@ function custom_display_product_reviews() {
     </div>
     <?php
 }
+
 
 // 8. Priekš mazās "Reviews" sekcijas produkta rediģēšanas lapā (moderācijas panelī)
 add_action( 'add_meta_boxes_product', function() {
